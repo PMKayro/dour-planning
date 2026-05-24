@@ -102,6 +102,26 @@ def normalize_spotify(src: str) -> str:
     return src
 
 
+def absolutize(url: str) -> str:
+    if not url:
+        return ""
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        return BASE_URL + url
+    return url
+
+
+def img_url(img) -> str:
+    """Meilleure URL d'image dispo dans une balise <img> (gere le lazy-load)."""
+    if not img:
+        return ""
+    src = img.get("data-src") or img.get("src") or ""
+    if (not src or "data:image" in src) and img.get("srcset"):
+        src = img["srcset"].split(",")[0].strip().split(" ")[0]
+    return absolutize(src)
+
+
 def scrape_day(slug: str, label: str) -> dict[str, dict]:
     """Retourne {url_page_artiste: {name, url, jour}} pour un jour donne."""
     url = f"{BASE_URL}/{slug}/"
@@ -115,12 +135,15 @@ def scrape_day(slug: str, label: str) -> dict[str, dict]:
             continue
         full = href if href.startswith("http") else BASE_URL + href
 
+        img = a.find("img")
         name = a.get_text(" ", strip=True)
         if not name:
-            img = a.find("img")
             name = (img.get("alt").strip() if img and img.get("alt") else "") or slug_to_name(href)
 
-        artists.setdefault(full, {"name": name, "url": full, "jour": label})
+        artists.setdefault(
+            full,
+            {"name": name, "url": full, "jour": label, "image": img_url(img)},
+        )
 
     log.info("  -> %d artistes", len(artists))
     return artists
@@ -149,6 +172,12 @@ def enrich(artist: dict) -> dict:
     artist["scene"] = detect_stage(soup.get_text(" ", strip=True))
     if not artist["scene"]:
         log.warning("  scene non detectee pour %s", artist["name"])
+
+    # Image de la carte = photo de l'artiste (CDN). og:image seulement en secours.
+    if not artist.get("image"):
+        og = soup.find("meta", property="og:image")
+        if og and og.get("content"):
+            artist["image"] = absolutize(og["content"].strip())
     return artist
 
 
@@ -186,6 +215,7 @@ def build_fields_schema() -> list[dict]:
         {"name": "Genre", "type": "singleLineText"},
         {"name": "Page Dour", "type": "url"},
         {"name": "Spotify", "type": "url"},
+        {"name": "Image", "type": "multipleAttachments"},
     ]
     for person in TEAM:
         fields.append(
@@ -199,19 +229,34 @@ def build_fields_schema() -> list[dict]:
 
 
 def ensure_table(base):
-    existing = {t.name for t in base.schema().tables}
-    if TABLE_NAME in existing:
-        log.info("Table '%s' deja presente.", TABLE_NAME)
+    schema = build_fields_schema()
+    tables = {t.name for t in base.schema().tables}
+    if TABLE_NAME not in tables:
+        log.info("Creation de la table '%s'...", TABLE_NAME)
+        base.create_table(TABLE_NAME, schema)
         return base.table(TABLE_NAME)
-    log.info("Creation de la table '%s'...", TABLE_NAME)
-    base.create_table(TABLE_NAME, build_fields_schema())
-    return base.table(TABLE_NAME)
+
+    log.info("Table '%s' deja presente.", TABLE_NAME)
+    table = base.table(TABLE_NAME)
+    existing_fields = {f.name for f in table.schema().fields}
+    for field in schema:
+        if field["name"] not in existing_fields:
+            log.info("Ajout du champ manquant '%s'", field["name"])
+            table.create_field(field["name"], field["type"], options=field.get("options"))
+    return table
 
 
 def sync(artists: list[dict]):
     api = Api(os.environ["AIRTABLE_TOKEN"])
     base = api.base(os.environ["AIRTABLE_BASE_ID"])
     table = ensure_table(base)
+
+    # Artistes ayant deja une image -> on ne la recharge pas (sinon doublons a chaque run)
+    has_image = set()
+    for rec in table.all(fields=["Page Dour", "Jour", "Image"]):
+        f = rec["fields"]
+        if f.get("Image"):
+            has_image.add((f.get("Page Dour"), f.get("Jour")))
 
     records = []
     for art in artists:
@@ -224,6 +269,8 @@ def sync(artists: list[dict]):
             fields["Spotify"] = art["spotify"]
         if art.get("scene"):
             fields["Scene"] = art["scene"]
+        if art.get("image") and (art["url"], art["jour"]) not in has_image:
+            fields["Image"] = [{"url": art["image"]}]
         records.append({"fields": fields})
 
     # Upsert sur (Page Dour, Jour) : ne touche pas aux colonnes de vote.
