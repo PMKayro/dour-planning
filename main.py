@@ -122,6 +122,18 @@ def img_url(img) -> str:
     return absolutize(src)
 
 
+def card_image(link) -> str:
+    """Image de l'artiste : dans la carte 'flip-box' qui entoure le lien popup."""
+    card = link.find_parent("div", class_="flip-box-inner") or link.find_parent("div", class_="flip-box")
+    if not card:
+        return ""
+    for img in card.find_all("img"):
+        url = img_url(img)
+        if "azureedge" in url:  # CDN des photos d'artistes (ignore logos/pixels)
+            return url
+    return ""
+
+
 def scrape_day(slug: str, label: str) -> dict[str, dict]:
     """Retourne {url_page_artiste: {name, url, jour}} pour un jour donne."""
     url = f"{BASE_URL}/{slug}/"
@@ -129,20 +141,15 @@ def scrape_day(slug: str, label: str) -> dict[str, dict]:
     soup = get_soup(url)
 
     artists: dict[str, dict] = {}
-    for a in soup.select('a[href*="/artiste/"]'):
+    for a in soup.select("a.artist-popup-link"):
         href = a.get("href") or ""
-        if not href:
+        if "/artiste/" not in href:
             continue
         full = href if href.startswith("http") else BASE_URL + href
-
-        img = a.find("img")
-        name = a.get_text(" ", strip=True)
-        if not name:
-            name = (img.get("alt").strip() if img and img.get("alt") else "") or slug_to_name(href)
-
+        # le texte du lien = "En savoir plus" : le vrai nom vient du h1 (enrich)
         artists.setdefault(
             full,
-            {"name": name, "url": full, "jour": label, "image": img_url(img)},
+            {"name": slug_to_name(href), "url": full, "jour": label, "image": card_image(a)},
         )
 
     log.info("  -> %d artistes", len(artists))
@@ -216,6 +223,7 @@ def build_fields_schema() -> list[dict]:
         {"name": "Page Dour", "type": "url"},
         {"name": "Spotify", "type": "url"},
         {"name": "Image", "type": "multipleAttachments"},
+        {"name": "Image URL", "type": "url"},
     ]
     for person in TEAM:
         fields.append(
@@ -269,8 +277,10 @@ def sync(artists: list[dict]):
             fields["Spotify"] = art["spotify"]
         if art.get("scene"):
             fields["Scene"] = art["scene"]
-        if art.get("image") and (art["url"], art["jour"]) not in has_image:
-            fields["Image"] = [{"url": art["image"]}]
+        if art.get("image"):
+            fields["Image URL"] = art["image"]
+            if (art["url"], art["jour"]) not in has_image:
+                fields["Image"] = [{"url": art["image"]}]
         records.append({"fields": fields})
 
     # Upsert sur (Page Dour, Jour) : ne touche pas aux colonnes de vote.
