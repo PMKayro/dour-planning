@@ -161,25 +161,34 @@ def clean_query(name: str) -> str:
 
 
 def deezer_preview(name: str) -> str:
-    """Extrait mp3 de 30s via l'API publique Deezer (sans cle). '' si pas trouve."""
+    """Extrait mp3 de 30s via l'API publique Deezer (sans cle). '' si pas trouve.
+
+    On cherche d'abord l'ARTISTE (sinon /search renvoie le titre le plus populaire,
+    pas le bon artiste), puis on prend son top titre.
+    """
     q = clean_query(name)
     if not q:
         return ""
     try:
-        resp = requests.get(
-            "https://api.deezer.com/search", params={"q": q, "limit": 1}, headers=HEADERS, timeout=20
-        )
-        data = resp.json().get("data", [])
+        artists = requests.get(
+            "https://api.deezer.com/search/artist", params={"q": q, "limit": 1}, headers=HEADERS, timeout=20
+        ).json().get("data", [])
+        if not artists:
+            return ""
+        artist = artists[0]
+        found = _norm(artist.get("name", ""))
+        # garde-fou : l'artiste renvoye doit correspondre (evite un homonyme)
+        if not found or not (found in _norm(q) or _norm(q) in found):
+            return ""
+        top = requests.get(
+            "https://api.deezer.com/artist/%s/top" % artist["id"],
+            params={"limit": 1}, headers=HEADERS, timeout=20,
+        ).json().get("data", [])
     except Exception as exc:  # noqa: BLE001
         log.warning("  deezer KO %s (%s)", name, exc)
         return ""
-    if not data:
-        return ""
-    track = data[0]
-    found = _norm(track.get("artist", {}).get("name", ""))
-    # garde-fou : l'artiste renvoye doit correspondre (evite un extrait d'un homonyme)
-    if track.get("preview") and found and (found in _norm(q) or _norm(q) in found):
-        return track["preview"]
+    if top and top[0].get("preview"):
+        return top[0]["preview"]
     return ""
 
 
