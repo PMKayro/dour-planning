@@ -84,9 +84,28 @@ def _norm(s: str) -> str:
     return s.lower().replace("’", "'").replace("‘", "'").replace("ʼ", "'")
 
 
-def detect_stage(text: str) -> str:
-    """Repere une scene connue dans le texte de la page artiste."""
-    low = _norm(text)
+# Sous-titre des fiches : "samedi 18 juillet - The Last Arena" -> capte la scene.
+DAY_STAGE_RE = re.compile(r"\b\d{1,2}\s+(?:juillet|july)\s*[-–—]\s*(.+)$", re.I)
+
+
+def detect_stage(soup) -> str:
+    """Lit le sous-titre 'JOUR DATE - SCENE' present sur chaque fiche artiste.
+    Capte n'importe quelle scene (ex: La Brasserie), pas seulement une liste figee.
+    Fallback : recherche d'une scene connue dans tout le texte."""
+    best = None
+    for el in soup.find_all(["h1", "h2", "h3", "h4", "h5", "p", "span", "div"]):
+        t = el.get_text(" ", strip=True)
+        if not t or len(t) > 80:
+            continue
+        m = DAY_STAGE_RE.search(t)
+        if m:
+            stage = m.group(1).strip(" -–—· ")
+            if stage and (best is None or len(t) < best[0]):
+                best = (len(t), stage)
+    if best:
+        return best[1]
+
+    low = _norm(soup.get_text(" ", strip=True))  # fallback : liste connue
     for alias in STAGES:
         if _norm(alias) in low:
             return STAGE_ALIASES[alias]
@@ -176,7 +195,7 @@ def enrich(artist: dict) -> dict:
             break
     artist["spotify"] = spotify
 
-    artist["scene"] = detect_stage(soup.get_text(" ", strip=True))
+    artist["scene"] = detect_stage(soup)
     if not artist["scene"]:
         log.warning("  scene non detectee pour %s", artist["name"])
 
