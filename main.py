@@ -79,11 +79,16 @@ def slug_to_name(href: str) -> str:
     return m.group(1).replace("-", " ").title()
 
 
+def _norm(s: str) -> str:
+    """Minuscule + apostrophes typographiques -> droites (pour matcher L'Atelier)."""
+    return s.lower().replace("’", "'").replace("‘", "'").replace("ʼ", "'")
+
+
 def detect_stage(text: str) -> str:
     """Repere une scene connue dans le texte de la page artiste."""
-    low = text.lower()
+    low = _norm(text)
     for alias in STAGES:
-        if alias.lower() in low:
+        if _norm(alias) in low:
             return STAGE_ALIASES[alias]
     return ""
 
