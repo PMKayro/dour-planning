@@ -153,6 +153,36 @@ def card_image(link) -> str:
     return ""
 
 
+def clean_query(name: str) -> str:
+    """Nettoie un nom d'artiste pour la recherche Deezer (enleve B2B, presented by...)."""
+    name = re.split(r"\b(?:presented by|presents?|b2b|feat\.?|with|vs)\b", name, flags=re.I)[0]
+    name = re.sub(r"\b(?:dj set|live)\b.*$", "", name, flags=re.I)
+    return name.strip(" -–—·:•")
+
+
+def deezer_preview(name: str) -> str:
+    """Extrait mp3 de 30s via l'API publique Deezer (sans cle). '' si pas trouve."""
+    q = clean_query(name)
+    if not q:
+        return ""
+    try:
+        resp = requests.get(
+            "https://api.deezer.com/search", params={"q": q, "limit": 1}, headers=HEADERS, timeout=20
+        )
+        data = resp.json().get("data", [])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("  deezer KO %s (%s)", name, exc)
+        return ""
+    if not data:
+        return ""
+    track = data[0]
+    found = _norm(track.get("artist", {}).get("name", ""))
+    # garde-fou : l'artiste renvoye doit correspondre (evite un extrait d'un homonyme)
+    if track.get("preview") and found and (found in _norm(q) or _norm(q) in found):
+        return track["preview"]
+    return ""
+
+
 def scrape_day(slug: str, label: str) -> dict[str, dict]:
     """Retourne {url_page_artiste: {name, url, jour}} pour un jour donne."""
     url = f"{BASE_URL}/{slug}/"
@@ -194,6 +224,7 @@ def enrich(artist: dict) -> dict:
             spotify = normalize_spotify(src)
             break
     artist["spotify"] = spotify
+    artist["preview"] = deezer_preview(artist["name"])
 
     artist["scene"] = detect_stage(soup)
     if not artist["scene"]:
@@ -243,6 +274,7 @@ def build_fields_schema() -> list[dict]:
         {"name": "Spotify", "type": "url"},
         {"name": "Image", "type": "multipleAttachments"},
         {"name": "Image URL", "type": "url"},
+        {"name": "Extrait", "type": "multipleAttachments"},
     ]
     for person in TEAM:
         fields.append(
@@ -278,12 +310,15 @@ def sync(artists: list[dict]):
     base = api.base(os.environ["AIRTABLE_BASE_ID"])
     table = ensure_table(base)
 
-    # Artistes ayant deja une image -> on ne la recharge pas (sinon doublons a chaque run)
-    has_image = set()
-    for rec in table.all(fields=["Page Dour", "Jour", "Image"]):
+    # Pieces jointes deja presentes -> on ne les recharge pas (sinon doublons a chaque run)
+    has_image, has_preview = set(), set()
+    for rec in table.all(fields=["Page Dour", "Jour", "Image", "Extrait"]):
         f = rec["fields"]
+        key = (f.get("Page Dour"), f.get("Jour"))
         if f.get("Image"):
-            has_image.add((f.get("Page Dour"), f.get("Jour")))
+            has_image.add(key)
+        if f.get("Extrait"):
+            has_preview.add(key)
 
     records = []
     for art in artists:
@@ -296,10 +331,13 @@ def sync(artists: list[dict]):
             fields["Spotify"] = art["spotify"]
         if art.get("scene"):
             fields["Scene"] = art["scene"]
+        key = (art["url"], art["jour"])
         if art.get("image"):
             fields["Image URL"] = art["image"]
-            if (art["url"], art["jour"]) not in has_image:
+            if key not in has_image:
                 fields["Image"] = [{"url": art["image"]}]
+        if art.get("preview") and key not in has_preview:
+            fields["Extrait"] = [{"url": art["preview"]}]
         records.append({"fields": fields})
 
     # Upsert sur (Page Dour, Jour) : ne touche pas aux colonnes de vote.
