@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+from datetime import date
 
 import requests
 from bs4 import BeautifulSoup
@@ -296,6 +297,32 @@ def build_fields_schema() -> list[dict]:
     return fields
 
 
+def notify_discord(artists: list[dict], new: list[str]):
+    """Poste un recap sur Discord via webhook (DISCORD_WEBHOOK_URL). Optionnel."""
+    url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not url:
+        return
+    total = len(artists)
+    scenes = sum(1 for a in artists if a.get("scene"))
+    extraits = sum(1 for a in artists if a.get("preview"))
+    horaires = any(re.search(r"\d{1,2}\s*[h:]\s*\d{2}", a.get("scene", "")) for a in artists)
+
+    lines = [f"🎶 **Line-up Dour — maj du {date.today().strftime('%d/%m')}**"]
+    if new:
+        shown = ", ".join(new[:30]) + (f" … (+{len(new) - 30})" if len(new) > 30 else "")
+        lines.append(f"🎉 **{len(new)} nouveau(x) artiste(s)** : {shown}")
+    else:
+        lines.append("✅ Rien de neuf aujourd'hui.")
+    lines.append(f"📊 {total} artistes · scènes {scenes}/{total} · extraits {extraits}/{total}")
+    if horaires:
+        lines.append("⏰ **Format horaires détecté sur le site** — penser à vérifier le champ Heure.")
+
+    try:
+        requests.post(url, json={"content": "\n".join(lines)[:1900]}, timeout=20)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("discord KO (%s)", exc)
+
+
 def ensure_table(base):
     schema = build_fields_schema()
     tables = {t.name for t in base.schema().tables}
@@ -357,6 +384,7 @@ def sync(artists: list[dict]):
     log.info("Airtable sync OK : %d records (%d nouveaux).", len(records), len(new))
     if new:
         log.info("Nouveaux artistes : %s", ", ".join(new))
+    notify_discord(artists, new)
 
 
 # --------------------------------------------------------------------------- #
