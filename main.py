@@ -307,7 +307,9 @@ def notify_discord(artists: list[dict], new: list[str]):
     extraits = sum(1 for a in artists if a.get("preview"))
     horaires = any(re.search(r"\d{1,2}\s*[h:]\s*\d{2}", a.get("scene", "")) for a in artists)
 
-    lines = [f"🎶 **Line-up Dour — maj du {date.today().strftime('%d/%m')}**"]
+    news = bool(new) or horaires  # ping @here seulement s'il y a du nouveau
+    header = "@here " if news else ""
+    lines = [f"{header}🎶 **Line-up Dour — maj du {date.today().strftime('%d/%m')}**"]
     if new:
         shown = ", ".join(new[:30]) + (f" … (+{len(new) - 30})" if len(new) > 30 else "")
         lines.append(f"🎉 **{len(new)} nouveau(x) artiste(s)** : {shown}")
@@ -317,8 +319,13 @@ def notify_discord(artists: list[dict], new: list[str]):
     if horaires:
         lines.append("⏰ **Format horaires détecté sur le site** — penser à vérifier le champ Heure.")
 
+    payload = {
+        "content": "\n".join(lines)[:1900],
+        # autorise @here seulement les jours avec du nouveau
+        "allowed_mentions": {"parse": ["everyone"] if news else []},
+    }
     try:
-        requests.post(url, json={"content": "\n".join(lines)[:1900]}, timeout=20)
+        requests.post(url, json=payload, timeout=20)
     except Exception as exc:  # noqa: BLE001
         log.warning("discord KO (%s)", exc)
 
