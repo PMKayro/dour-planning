@@ -320,10 +320,11 @@ def sync(artists: list[dict]):
     table = ensure_table(base)
 
     # Pieces jointes deja presentes -> on ne les recharge pas (sinon doublons a chaque run)
-    has_image, has_preview = set(), set()
+    has_image, has_preview, existing_keys = set(), set(), set()
     for rec in table.all(fields=["Page Dour", "Jour", "Image", "Extrait"]):
         f = rec["fields"]
         key = (f.get("Page Dour"), f.get("Jour"))
+        existing_keys.add(key)
         if f.get("Image"):
             has_image.add(key)
         if f.get("Extrait"):
@@ -349,10 +350,13 @@ def sync(artists: list[dict]):
             fields["Extrait"] = [{"url": art["preview"]}]
         records.append({"fields": fields})
 
+    new = sorted(art["name"] for art in artists if (art["url"], art["jour"]) not in existing_keys)
+
     # Upsert sur (Page Dour, Jour) : ne touche pas aux colonnes de vote.
-    res = table.batch_upsert(records, key_fields=["Page Dour", "Jour"], typecast=True)
-    created = len(res.get("createdRecords", []))
-    log.info("Airtable sync OK : %d records (%d crees).", len(records), created)
+    table.batch_upsert(records, key_fields=["Page Dour", "Jour"], typecast=True)
+    log.info("Airtable sync OK : %d records (%d nouveaux).", len(records), len(new))
+    if new:
+        log.info("Nouveaux artistes : %s", ", ".join(new))
 
 
 # --------------------------------------------------------------------------- #
